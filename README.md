@@ -85,6 +85,10 @@ protocols. The live one is the headline.
 
 A paper is in preparation; the citation will be added here.
 
+## License
+
+MIT (see `LICENSE`). The datasets keep their own licenses; download them from the original sources.
+
 ## Acknowledgements
 
 MSc thesis work at Gebze Technical University, Department of Electronics Engineering, supervised by
