@@ -1,5 +1,5 @@
 #!/bin/sh
-# Vision-language-model comparison (needs scripts/reproduce.sh first and a GPU with >= 20 GB for the 8B model).
+# Vision-language-model comparison (needs scripts/reproduce.sh first and a GPU with >= 12 GB for Qwen3-VL-4B).
 set -e
 C=${VAD_CACHE:-cache}
 [ -f "$C/avenue_rgb/gt.json" ] || python prepare_avenue.py --zip data/avenue/Avenue_Dataset.zip \
