@@ -4,7 +4,7 @@ set -e
 C=${VAD_CACHE:-cache}
 [ -f "$C/avenue_rgb/gt.json" ] || python prepare_avenue.py --zip data/avenue/Avenue_Dataset.zip \
     --gt-zip data/avenue/ground_truth_demo.zip --out "$C/avenue_rgb" --size 360x640 --color
-for m in 8B 4B; do
+for m in 4B; do
   for spec in "ped2 ped2" "avenue_rgb avenue" "ped1 ped1"; do
     set -- $spec; d=$1; ds=$2
     out=runs/vlm/${d}_qwen3vl_${m}

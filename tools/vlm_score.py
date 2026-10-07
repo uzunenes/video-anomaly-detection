@@ -7,11 +7,14 @@
 2. Deduction, --mode describe (default, AnomalyRuler's perception + reasoning): the VLM describes the test frame, then
    (text only) judges whether the description contains anything outside the normal list; --mode direct: one forward
    pass on the frame with the normal list. The frame score is log P(Yes) - log P(No) of the next token.
-Every --stride-th frame is scored; the others hold the latest score (causal). Writes scores.npz (vlm/<video>,
+Frames come from the cache (<data>/test/<video>.npy, <data>/train/*.npy) or, with --frames-root / --train-videos, from
+the original images and videos (e.g. ShanghaiTech in colour at full resolution; the induction and the test frames must
+then come from the same source). Every --stride-th frame is scored; the others hold the latest score (causal). Writes scores.npz (vlm/<video>,
 gt/<video>), rules.txt, descriptions.jsonl (describe mode) and timing.json (ms per frame at batch size 1 and at
 --batch). Nothing is taken from the test videos except the frame being scored.
 """
 import argparse
+import glob
 import json
 import time
 from pathlib import Path
@@ -22,17 +25,18 @@ from PIL import Image
 
 DESCRIBE = "Describe the people, vehicles, objects and activities visible in this surveillance frame in two sentences."
 INDUCE = ("These are descriptions of NORMAL frames from one fixed surveillance camera:\n{desc}\n\n"
-          "List, as short bullet points, the kinds of people, objects, vehicles and activities that appear in these "
-          "normal frames. Only list what the descriptions mention; do not add anything else.")
+          "List, as short bullet points, the GENERAL kinds of objects, vehicles and activities that appear in these "
+          "normal frames, e.g. 'pedestrians walking', 'people standing and talking', 'trash bins'. Do not list "
+          "clothing, colours, ages or individual people. Only list what the descriptions mention; at most 15 bullets.")
 PERCEIVE = ("Describe the people and objects in this surveillance frame and what each person is doing, in at most two "
             "sentences.")
 JUDGE = ("Normal frames of this fixed surveillance camera contain only the following:\n{rules}\n\n"
          "Description of the current frame: {desc}\n\n"
-         "Does the current frame contain any person activity, object or vehicle that is not in the normal list? "
-         "Answer Yes or No.")
+         "Does the current frame contain any activity, object or vehicle whose KIND is not in the normal list? "
+         "Ignore clothing, colours and the number of people. Answer Yes or No.")
 ASK = ("Normal frames of this fixed surveillance camera contain only the following:\n{rules}\n\n"
-       "Does this frame contain any person activity, object or vehicle that is not in the normal list? "
-       "Answer Yes or No.")
+       "Does this frame contain any activity, object or vehicle whose KIND is not in the normal list? "
+       "Ignore clothing, colours and the number of people. Answer Yes or No.")
 
 
 def to_pil(f: np.ndarray, side: int) -> Image.Image:
@@ -40,6 +44,42 @@ def to_pil(f: np.ndarray, side: int) -> Image.Image:
     im = Image.fromarray(f if f.ndim == 3 else np.repeat(f[..., None], 3, axis=2))
     s = side / max(im.size)
     return im.resize((round(im.size[0] * s), round(im.size[1] * s)), Image.BICUBIC) if s != 1 else im
+
+
+class Frames:
+    """Test frames of one video: the cache (N, H, W[, 3]) or the original images <root>/<video>/*.jpg (first n)."""
+
+    def __init__(self, data: Path, name: str, root: str, n: int):
+        self.files = sorted((Path(root) / name).glob("*.jpg"))[:n] if root else None
+        self.arr = None if root else np.load(data / "test" / f"{name}.npy", mmap_mode="r")
+        self.n = len(self.files) if root else len(self.arr)
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, i):
+        return np.asarray(Image.open(self.files[i]).convert("RGB")) if self.files is not None else np.asarray(self.arr[i])
+
+
+def normal_frames(data: Path, k: int, video_glob: str) -> list:
+    """k normal training frames, spread over the training videos (original videos when video_glob is given)."""
+    out = []
+    if video_glob:
+        import cv2
+        vids = sorted(glob.glob(video_glob))
+        for i in range(k):
+            cap = cv2.VideoCapture(vids[i % len(vids)])
+            n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, (i * 7919) % max(n, 1))
+            ok, f = cap.read()
+            if ok:
+                out.append(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
+        return out
+    train = sorted((data / "train").glob("*.npy"))
+    for i in range(k):
+        v = np.load(train[i % len(train)], mmap_mode="r")
+        out.append(np.asarray(v[(i * 7919) % len(v)]))
+    return out
 
 
 def load_model(name: str):
@@ -102,6 +142,8 @@ def main():
     ap.add_argument("--stride", type=int, default=1)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--limit", type=int, default=0, help="score only this many test videos (smoke test)")
+    ap.add_argument("--frames-root", default="", help="original test images <root>/<video>/*.jpg instead of the cache")
+    ap.add_argument("--train-videos", default="", help="glob of original normal training videos for the induction")
     args = ap.parse_args()
     data, out = Path(args.data), Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -115,21 +157,17 @@ def main():
     if rules_file.exists():
         rules = rules_file.read_text()
     else:                                                   # induction from k normal training frames, spread out
-        train = sorted((data / "train").glob("*.npy"))
-        picks = [(train[i % len(train)], i) for i in range(args.k)]
         desc = []
-        for p, i in picks:
-            v = np.load(p, mmap_mode="r")
-            f = to_pil(np.asarray(v[(i * 7919) % len(v)]), args.side)
+        for f in normal_frames(data, args.k, args.train_videos):
             desc.append("- " + generate(model, proc, [{"role": "user", "content": [
-                {"type": "image", "image": f}, {"type": "text", "text": DESCRIBE}]}], 120))
+                {"type": "image", "image": to_pil(f, args.side)}, {"type": "text", "text": DESCRIBE}]}], 120))
         rules = generate(model, proc, [{"role": "user", "content": [
-            {"type": "text", "text": INDUCE.format(desc="\n".join(desc))}]}], 250)
+            {"type": "text", "text": INDUCE.format(desc="\n".join(desc))}]}], 400)
         rules_file.write_text(rules)
         (out / "normal_descriptions.txt").write_text("\n".join(desc))
 
     # latency at batch 1 (live camera) and throughput at --batch
-    v0 = np.load(data / "test" / f"{names[0]}.npy", mmap_mode="r")
+    v0 = Frames(data, names[0], args.frames_root, len(gt[names[0]]))
     ims = [to_pil(np.asarray(v0[i]), args.side) for i in range(min(len(v0), 4 * args.batch))]
     score_frames(model, proc, ims[:1], rules, yes, no, args.mode)          # warm-up
     torch.cuda.synchronize()
@@ -142,7 +180,7 @@ def main():
     scores, n_scored, t_all = {}, 0, 0.0
     dfile = open(out / "descriptions.jsonl", "w") if args.mode == "describe" else None
     for name in names:
-        v = np.load(data / "test" / f"{name}.npy", mmap_mode="r")
+        v = Frames(data, name, args.frames_root, len(gt[name]))
         idx = list(range(0, len(v), args.stride))
         s = np.zeros(len(v), np.float32)
         torch.cuda.synchronize()

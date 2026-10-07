@@ -42,12 +42,15 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--size", default="180x320", help="HxW")
     ap.add_argument("--color", action="store_true", help="keep RGB frames")
+    ap.add_argument("--splits", default="train,test", help="which splits to write (e.g. test)")
     args = ap.parse_args()
     size = tuple(int(v) for v in args.size.lower().split("x"))
     out = Path(args.out)
 
     zf = zipfile.ZipFile(args.zip)
     for split, folder in (("train", "training_videos"), ("test", "testing_videos")):
+        if split not in args.splits.split(","):
+            continue
         (out / split).mkdir(parents=True, exist_ok=True)
         names = sorted(n for n in zf.namelist() if f"/{folder}/" in n and n.lower().endswith(".avi")
                        and not Path(n).name.startswith("."))

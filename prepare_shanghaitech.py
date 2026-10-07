@@ -1,6 +1,8 @@
-"""ShanghaiTech Campus -> per-scene caches (same layout as prepare_ucsd.py / prepare_ipad.py), read from the zip.
+"""ShanghaiTech Campus -> per-scene caches (same layout as prepare_ucsd.py / prepare_ipad.py), read from the zip or
+from the extracted official archive (cat shanghaitech.tar.gz.a? | tar xz).
 
     python prepare_shanghaitech.py --zip data/shanghaitech.zip --out cache --size 180x320
+    python prepare_shanghaitech.py --root data/shanghaitech --out cache --size 180x320
 
 Expected inside the zip (any top folder): training/videos/<SS>_<VVV>.avi (normal only),
 testing/frames/<SS>_<VVVV>/<NNN>.jpg and testing/test_frame_mask/<SS>_<VVVV>.npy (frame labels).
@@ -23,9 +25,26 @@ import numpy as np
 ZIP = None
 
 
+class _Dir:
+    """Read files of an extracted archive by their names relative to its root (zip-like)."""
+
+    def __init__(self, root):
+        self.root = Path(root)
+
+    def namelist(self):
+        return [str(p.relative_to(self.root)) for p in self.root.rglob("*") if p.is_file()]
+
+    def read(self, name):
+        return (self.root / name).read_bytes()
+
+
+def _open(path):
+    return _Dir(path) if Path(path).is_dir() else zipfile.ZipFile(path)
+
+
 def _init(path):
     global ZIP
-    ZIP = zipfile.ZipFile(path)
+    ZIP = _open(path)
 
 
 def _video(args):
@@ -58,14 +77,16 @@ def _frames(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--zip", required=True)
+    ap.add_argument("--zip", default="")
+    ap.add_argument("--root", default="", help="extracted archive folder (instead of --zip)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--size", default="180x320", help="HxW")
     ap.add_argument("--workers", type=int, default=12)
     args = ap.parse_args()
     size = tuple(int(v) for v in args.size.lower().split("x"))
     out = Path(args.out)
-    names = zipfile.ZipFile(args.zip).namelist()
+    src = args.root or args.zip
+    names = _open(src).namelist()
     vids = sorted(n for n in names if re.search(r"training/videos/\d\d_\d+\.avi$", n))
     frames = defaultdict(list)
     for n in names:
@@ -73,7 +94,7 @@ def main():
         if m:
             frames[m.group(1)].append(n)
     masks = {Path(n).stem: n for n in names if re.search(r"testing/test_frame_mask/\d\d_\d+\.npy$", n)}
-    print(f"zip: {len(vids)} training videos, {len(frames)} test videos, {len(masks)} frame masks")
+    print(f"source: {len(vids)} training videos, {len(frames)} test videos, {len(masks)} frame masks")
     jobs_v, jobs_f = [], []
     for n in vids:
         sc = Path(n).stem[:2]
@@ -86,14 +107,14 @@ def main():
         d.mkdir(parents=True, exist_ok=True)
         if not (d / f"{v}.npy").exists():
             jobs_f.append((sorted(fl), size, str(d / f"{v}.npy")))
-    with ProcessPoolExecutor(args.workers, initializer=_init, initargs=(args.zip,)) as ex:
+    with ProcessPoolExecutor(args.workers, initializer=_init, initargs=(src,)) as ex:
         for i, r in enumerate(ex.map(_video, jobs_v)):
             if i % 50 == 0:
                 print("train", i, r, flush=True)
         for i, r in enumerate(ex.map(_frames, jobs_f)):
             if i % 20 == 0:
                 print("test", i, r, flush=True)
-    zf = zipfile.ZipFile(args.zip)
+    zf = _open(src)
     gts = defaultdict(dict)
     for v in frames:
         lab = np.load(io.BytesIO(zf.read(masks[v]))).astype(np.uint8).ravel()

@@ -26,31 +26,46 @@ frame ─┬─> autoencoder residual (AEAN 2d, 16×16 patches) ──> per-cell
 
 ## Results (frame-level AUC)
 
-| Protocol | UCSD Ped2 | UCSD Ped1 | CUHK Avenue |
-|---|---|---|---|
-| **Live**: causal median over 9 frames, nothing taken from the test video | **0.929** | **0.775** | **0.881** |
-| Literature: per-video min-max + centred Gaussian (σ = 3) | 0.965 | 0.780 | 0.868 |
+| Protocol | UCSD Ped2 | UCSD Ped1 | CUHK Avenue | ShanghaiTech |
+|---|---|---|---|---|
+| **Live**: causal median over 9 frames, nothing taken from the test video | **0.929** | **0.775** | **0.881** | **0.661** |
+| Literature: per-video min-max + centred Gaussian (σ = 3) | 0.965 | 0.780 | 0.868 | 0.744 |
 
+**Setup:**
+- ShanghaiTech uses one model per camera (12 test scenes, 107 videos), pooled over all test frames.
+- The settings were fixed on UCSD and Avenue and applied unchanged to ShanghaiTech.
+
+**Further numbers:**
 - **Seeds:** across three seeds the spread is at most ±0.004.
 - **Speed:** the whole pipeline runs on 4 CPU threads at batch size 1 — 21.5 FPS at 180×320 and 12.9 FPS at 240×360.
-- **MNAD (CVPR 2020), retrained with its official code:** Ped2 0.940 under its own protocol and 0.842 live; Avenue 0.877
-  and 0.897.
+- **MNAD (CVPR 2020)**, retrained with its official code:
+  - Ped2 0.940 under its own protocol and 0.842 live;
+  - Avenue 0.877 and 0.897;
+  - ShanghaiTech 70.5 as reported in its paper.
 
-### Comparison with a vision-language model (live protocol)
+**Known weakness:** on ShanghaiTech the autoencoder-residual channel is weak and even inverted in 4 of the 12 scenes.
+The optical-flow channels carry the method: with them alone the live score is 0.740, but that combination was chosen
+after seeing the results.
+
+### Comparison with a vision-language model (same live protocol)
 
 The comparison model is an open, simplified AnomalyRuler-style pipeline (`tools/vlm_score.py`), not AnomalyRuler's
 reported numbers:
-- Qwen3-VL-8B lists what normal frames show (k = 16).
+- Qwen3-VL-4B lists the general kinds of things that normal frames show (k = 16).
 - Each test frame is described, then judged against that list.
+- ShanghaiTech is scored on its original colour frames, every 2nd frame.
 
-| | Ped2 | Ped1 | Avenue | Time per frame | Hardware |
-|---|---|---|---|---|---|
-| This method | 0.929 | 0.775 | 0.881 | 0.05–0.08 s | 4-core CPU |
-| Qwen3-VL-8B, describe-then-judge | 0.939 | 0.751 | 0.684 | ~1.9 s | RTX 3090 Ti, 18 GB |
+| | Ped2 | Ped1 | Avenue | ShanghaiTech | Time per frame | Hardware |
+|---|---|---|---|---|---|---|
+| This method | 0.929 | 0.775 | **0.881** | 0.661 | 0.05–0.08 s | 4-core CPU |
+| Qwen3-VL-4B, describe-then-judge | **0.946** | **0.794** | 0.635 | **0.789** | ~1.8 s | RTX 3090 Ti, 10 GB |
 
-The two approaches suit different anomalies:
-- The VLM names object-type anomalies such as bicycles and cars.
-- It misses motion anomalies such as running and throwing, which the optical-flow channels capture.
+How the two compare:
+- **Accuracy:** the VLM is better on object-type anomalies (bicycles, cars, skateboards), which dominate UCSD and
+  ShanghaiTech. This method is far better on motion anomalies (running, throwing), which dominate Avenue.
+- **Cost:** the VLM needs a GPU and is 25–40× slower.
+
+The two are complementary: this method can run continuously as a cheap first stage and call a VLM only on alarms.
 
 ## Quick start
 
@@ -59,7 +74,8 @@ pip install -r requirements.txt
 export VAD_CACHE=$PWD/cache
 sh scripts/prepare_data.sh        # downloads UCSD Ped1/Ped2 and CUHK Avenue, builds the frame caches
 sh scripts/reproduce.sh           # trains the autoencoders, evaluates all channels, prints the protocol table
-sh scripts/vlm.sh                 # optional: the vision-language-model comparison (GPU with ≥ 20 GB)
+sh scripts/shanghaitech.sh <dir>  # optional: ShanghaiTech (dir with the official shanghaitech.tar.gz.a? parts)
+sh scripts/vlm.sh                 # optional: the vision-language-model comparison (GPU with ≥ 12 GB)
 ```
 
 ## Layout
@@ -72,6 +88,7 @@ sh scripts/vlm.sh                 # optional: the vision-language-model comparis
 | `tools/fuse_runs.py` | Channel normalisation (z / Fisher) and leave-one-dataset-out channel selection |
 | `tools/temporal_protocols.py` | Final score under the live, fixed-lag and literature protocols |
 | `tools/vlm_score.py`, `tools/vlm_eval.py` | Vision-language-model baseline and comparison, including a gated cascade |
+| `tools/shtech_protocols.py` | ShanghaiTech: final method, channels and VLM under the live and literature protocols |
 | `live.py` | Recording a camera, training on it and scoring a live stream (RTSP, file or webcam) |
 | `bench.py`, `tools/bench_pipeline.py` | CPU/GPU timing |
 
