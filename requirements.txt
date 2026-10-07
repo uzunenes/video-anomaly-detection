@@ -1,0 +1,10 @@
+torch>=2.2
+numpy
+scipy
+scikit-learn
+opencv-python-headless
+matplotlib
+pillow
+# vision-language-model comparison only (tools/vlm_score.py)
+transformers>=4.57,<5
+accelerate
